@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# wrapper to use nvim-contained container image
+# for more information read the note at the end of the file
+
+VERSION='0.1'
+IMAGE_NAME='nvim-contained'
+SUFFIX='contained' # added to nvim directories so regular nvim is not affected
+
+function generate_podman_cmd() {
+    local CMD="podman run"
+
+    CMD="$CMD --rm -it"
+
+    # TODO this could be a bit reworked, i had issues with volumes being nobody:nobody
+    # allows use of specialized terminals
+    CMD="$CMD -v /usr/share/terminfo:/host/share/terminfo:ro"
+    [[ -d /usr/lib/terminfo ]] && CMD="$CMD -v /usr/lib/terminfo:/host/lib/terminfo:ro" # debian
+    CMD="$CMD -v /etc/terminfo:/host/etc/terminfo:ro"
+    CMD="$CMD -e TERMINFO_DIRS=/host/share/terminfo:/host/lib/terminfo:/host/etc/terminfo"
+
+    # directories which should persist
+    CMD="$CMD -v $HOME/.local/state/nvim-${SUFFIX:?}:/root/.local/state/nvim"
+    CMD="$CMD -v $HOME/.local/share/nvim-${SUFFIX}:/root/.local/share/nvim"
+    CMD="$CMD -v $HOME/.config/nvim-${SUFFIX}:/root/.config/nvim"
+    CMD="$CMD -v $HOME/.cache/nvim-${SUFFIX}:/root/.cache/nvim"
+
+    # environment
+    CMD="$CMD -e TERM=$TERM"
+    CMD="$CMD -e PCONTAINED=1"
+
+    CMD="$CMD --entrypoint /usr/bin/nvim"
+    CMD="$CMD $* ${IMAGE_NAME:?}"
+
+    echo "$CMD"
+}
+
+POSITIONAL_ARGS=()
+
+while [ $# -gt 0 ]; do
+    case $1 in
+        --update)
+            UPDATE=1
+            shift
+            ;;
+        --shell) # this is only for debugging
+            SHELL=1
+            shift
+            ;;
+        -h|--help)
+            cat <<EOF
+nvim-contained
+
+Wrapper around nvim inside a podman container, sandboxed with minimal access to
+host system, any paths passed are mounted as volume inside container RW
+
+To update neovim run \`$0 --update\` and it will run \`:UpdateAll\`
+
+--- nvim help ---
+EOF
+
+            # call nvim help
+            eval "$(generate_podman_cmd) --help"
+            exit 0
+            ;;
+        -v|--version)
+            echo "nvim-contained wrapper version $VERSION"
+
+            # call nvim version
+            eval "$(generate_podman_cmd) --version"
+            exit 0
+            ;;
+        -*)
+            echo "Unknown option $1"
+            exit 1
+            ;;
+        *)
+            # save positional arg
+            POSITIONAL_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+# restore positional parameters
+set -- "${POSITIONAL_ARGS[@]}"
+
+# make sure dirs exist
+mkdir -p "$HOME/.local/state/nvim-${SUFFIX:?}"
+mkdir -p "$HOME/.local/share/nvim-${SUFFIX:?}"
+mkdir -p "$HOME/.config/nvim-${SUFFIX:?}"
+mkdir -p "$HOME/.cache/nvim-${SUFFIX:?}"
+
+if [[ "$UPDATE" == "1" ]]; then
+    echo "Updating neovim contained"
+
+    # update requires networking so it is not disabled here
+    exec $(generate_podman_cmd) --headless +"UpdateAll"
+elif [[ "$SHELL" == "1" ]]; then
+    echo "Starting debugging shell inside container"
+
+    # allow network when debugging?
+    exec $(generate_podman_cmd --entrypoint /usr/bin/bash)
+fi
+
+# TODO add permission for paths passed
+# no network by default
+exec $(generate_podman_cmd --network=none)
+
+# --- NOTE ---
+#
+# This is wrapper script meant for use with this container, you can use it bare
+# or modify it to your liking
+#
+# Put it anywhere within your PATH, usually '~/.local/bin' is a good place
+#
+# If you ever wish to update it or reset it just run this command
+#   `podman --rm -it run nvim-contained > nvim-wrapper`
+

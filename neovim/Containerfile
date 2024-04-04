@@ -1,5 +1,5 @@
 LABEL name="neovim" \
-      summary="Neovim container based on fedora." \
+      summary="Neovim contained (based on fedora)" \
       maintainer="Sandorex <rzhw3h@gmail.com>"
 
 ARG VERSION=39
@@ -28,11 +28,7 @@ ENV LC_ALL=en_US.UTF-8
 ENV ws=/ws
 WORKDIR ${ws}
 
-# TODO add update script in /update-container.sh
-
-ENTRYPOINT [ "/usr/bin/nvim" ]
-
-#######################
-# - volume mount RO /etc/terminfo
-# - volume mount XDG .cache .config with nvim-contained as name
+# by default print the wrapper script so it could be installed easily
+COPY ./nvim-wrapper /
+ENTRYPOINT [ "cat", "/nvim-wrapper" ]
 
