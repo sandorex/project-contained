@@ -2,42 +2,69 @@
 # wrapper to use nvim-contained container image
 # for more information read the note at the end of the file
 
-VERSION='0.1'
-IMAGE_NAME='nvim-contained'
-SUFFIX='contained' # added to nvim directories so regular nvim is not affected
+WRAPPER_VERSION="0.1"
+SDK_IDS="rust-stable,node20"
 
-function generate_podman_cmd() {
-    local CMD="podman run"
+if ! command -v flatpak &>/dev/null; then
+    echo "This wrapper script requires flatpak to be installed"
+    exit 1
+fi
 
-    CMD="$CMD --rm -it"
+function generate_cmd() {
+    local CMD="flatpak run"
 
-    # TODO this could be a bit reworked, i had issues with volumes being nobody:nobody
-    # allows use of specialized terminals
-    CMD="$CMD -v /usr/share/terminfo:/host/share/terminfo:ro"
-    [[ -d /usr/lib/terminfo ]] && CMD="$CMD -v /usr/lib/terminfo:/host/lib/terminfo:ro" # debian
-    CMD="$CMD -v /etc/terminfo:/host/etc/terminfo:ro"
-    CMD="$CMD -e TERMINFO_DIRS=/host/share/terminfo:/host/lib/terminfo:/host/etc/terminfo"
+    # remove default permissions
+    CMD="$CMD --sandbox"
 
-    # directories which should persist
-    CMD="$CMD -v $HOME/.local/state/nvim-${SUFFIX:?}:/root/.local/state/nvim"
-    CMD="$CMD -v $HOME/.local/share/nvim-${SUFFIX}:/root/.local/share/nvim"
-    CMD="$CMD -v $HOME/.config/nvim-${SUFFIX}:/root/.config/nvim"
-    CMD="$CMD -v $HOME/.cache/nvim-${SUFFIX}:/root/.cache/nvim"
+    # for clipboard access
+    CMD="$CMD --socket=wayland --share=ipc"
 
-    # environment
-    CMD="$CMD -e TERM=$TERM"
-    CMD="$CMD -e PCONTAINED=1"
+    # no network by default
+    [[ "$NETWORK" == "1" ]] && CMD="$CMD --share=network"
 
-    CMD="$CMD --entrypoint /usr/bin/nvim"
-    CMD="$CMD $* ${IMAGE_NAME:?}"
+    # use terminfo from host
+    CMD="$CMD --filesystem=host-os:ro"
+    CMD="$CMD --env=TERMINFO_DIRS=/var/run/host/usr/share/terminfo:/var/run/host/usr/lib/terminfo:/var/run/host/etc/terminfo:/usr/share/terminfo"
+
+    # persist everything in its own home simpler than explicitly listing each path
+    CMD="$CMD --persist=."
+
+    # if the config is a link then allow read-only access to the target
+    [[ -L "~/.var/app/io.neovim.nvim/config/nvim" ]] && CMD="$CMD --filesystem=$(readlink ~/.var/app/io.neovim.nvim/config/nvim):ro"
+
+    # TODO allowing access to /tmp sounds like a bad idea for security
+    # CMD="$CMD --filesystem=/tmp --filesystem=/var/tmp"
+
+    # for some reason this is not set with sandbox
+    # this was causing the first run message to always appear on startup
+    CMD="$CMD --env=XDG_CONFIG_HOME=$HOME/config"
+    CMD="$CMD --env=XDG_STATE_HOME=$HOME/.local/state"
+
+    # enable SDKs
+    [[ -n "$SDK_IDS" ]] && CMD="$CMD --env=FLATPAK_ENABLE_SDK_EXT=$SDK_IDS"
+
+    CMD="$CMD $* io.neovim.nvim"
 
     echo "$CMD"
 }
 
 POSITIONAL_ARGS=()
 
+NETWORK=0
+INSTALL_SDK=0
+UPDATE=0
+SHELL=0
+
 while [ $# -gt 0 ]; do
     case $1 in
+        --network)
+            NETWORK=1
+            shift
+            ;;
+        --install-sdk)
+            INSTALL_SDK=1
+            shift
+            ;;
         --update)
             UPDATE=1
             shift
@@ -46,32 +73,37 @@ while [ $# -gt 0 ]; do
             SHELL=1
             shift
             ;;
-        -h|--help)
+        -h|--help)The remaining arguments are passed to the command that gets run in the sandboxed environment. See the --file-forwarding option for handling of file arguments.
             cat <<EOF
 nvim-contained
 
-Wrapper around nvim inside a podman container, sandboxed with minimal access to
-host system, any paths passed are mounted as volume inside container RW
+Wrapper around nvim flatpak, sandboxed with minimal access to
+host system, any paths passed are mounted inside container RW
 
-To update neovim run \`$0 --update\` and it will run \`:UpdateAll\`
+NOTE when opening files/paths enclose them in @PATH@ to use file forwarding
+
+Arguments:
+    --network       Allow network access
+                    (on by default with --update and --shell)
+    --install-sdk   Installs SDKs defined in the wrapper
+    --update        Runs ':UpdateAll' command in neovim headless
+    --shell         Start a debug shell inside container
+
+All other arguments are passed to neovim
 
 --- nvim help ---
 EOF
 
             # call nvim help
-            eval "$(generate_podman_cmd) --help"
+            eval "$(generate_cmd) --help"
             exit 0
             ;;
         -v|--version)
-            echo "nvim-contained wrapper version $VERSION"
+            echo "nvim-contained wrapper version ${WRAPPER_VERSION:?}"
 
             # call nvim version
-            eval "$(generate_podman_cmd) --version"
+            eval "$(generate_cmd) --version"
             exit 0
-            ;;
-        -*)
-            echo "Unknown option $1"
-            exit 1
             ;;
         *)
             # save positional arg
@@ -84,35 +116,33 @@ done
 # restore positional parameters
 set -- "${POSITIONAL_ARGS[@]}"
 
-# make sure dirs exist
-mkdir -p "$HOME/.local/state/nvim-${SUFFIX:?}"
-mkdir -p "$HOME/.local/share/nvim-${SUFFIX:?}"
-mkdir -p "$HOME/.config/nvim-${SUFFIX:?}"
-mkdir -p "$HOME/.cache/nvim-${SUFFIX:?}"
-
 if [[ "$UPDATE" == "1" ]]; then
-    echo "Updating neovim contained"
+    # updates require network access
+    NETWORK=1
 
-    # update requires networking so it is not disabled here
-    exec $(generate_podman_cmd) --headless +"UpdateAll"
+    echo "Updating neovim flatpak"
+    exec $(generate_cmd) --headless +"UpdateAll"
 elif [[ "$SHELL" == "1" ]]; then
-    echo "Starting debugging shell inside container"
+    # allow network when debugging
+    NETWORK=1
 
-    # allow network when debugging?
-    exec $(generate_podman_cmd --entrypoint /usr/bin/bash)
+    echo "Starting debugging shell inside flatpak container"
+    exec $(generate_cmd --command=/usr/bin/bash)
+elif [[ "$INSTALL_SDK" == "1" ]]; then
+    echo "Installing flatpak SDKs"
+
+    # generate a list from sdk names
+    local ids=""
+    for i in ${SDK_IDS/,/ }; do
+        ids="$ids org.freedesktop.Sdk.Extension.$i"
+    done
+
+    flatpak install -y "$ids"
+
+    exit 0
 fi
 
-# TODO add permission for paths passed
-# no network by default
-exec $(generate_podman_cmd --network=none)
+# TODO allow access to passed paths
 
-# --- NOTE ---
-#
-# This is wrapper script meant for use with this container, you can use it bare
-# or modify it to your liking
-#
-# Put it anywhere within your PATH, usually '~/.local/bin' is a good place
-#
-# If you ever wish to update it or reset it just run this command
-#   `podman --rm -it run nvim-contained > nvim-wrapper`
+exec $(generate_cmd) "$@"
 
