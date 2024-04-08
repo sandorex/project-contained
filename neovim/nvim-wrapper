@@ -26,19 +26,27 @@ function generate_cmd() {
     CMD="$CMD --filesystem=host-os:ro"
     CMD="$CMD --env=TERMINFO_DIRS=/var/run/host/usr/share/terminfo:/var/run/host/usr/lib/terminfo:/var/run/host/etc/terminfo:/usr/share/terminfo"
 
-    # persist everything in its own home simpler than explicitly listing each path
-    CMD="$CMD --persist=."
+    # persist the paths nvim flatpak uses
+    CMD="$CMD --persist=data"
+    CMD="$CMD --persist=config"
+    CMD="$CMD --persist=cache"
+    CMD="$CMD --persist=.config"
+    CMD="$CMD --persist=.local/data"
+    CMD="$CMD --persist=.local/share/nvim"
+    CMD="$CMD --persist=.local/cache"
 
-    # if the config is a link then allow read-only access to the target
-    [[ -L "~/.var/app/io.neovim.nvim/config/nvim" ]] && CMD="$CMD --filesystem=$(readlink ~/.var/app/io.neovim.nvim/config/nvim):ro"
+    # if the config is a link then allow access to it
+    [[ -L ~/.var/app/io.neovim.nvim/.config/nvim ]] && CMD="$CMD --filesystem=$(readlink ~/.var/app/io.neovim.nvim/.config/nvim)"
 
     # TODO allowing access to /tmp sounds like a bad idea for security
     # CMD="$CMD --filesystem=/tmp --filesystem=/var/tmp"
 
     # for some reason this is not set with sandbox
     # this was causing the first run message to always appear on startup
-    CMD="$CMD --env=XDG_CONFIG_HOME=$HOME/config"
+    CMD="$CMD --env=XDG_CONFIG_HOME=$HOME/.config"
+    CMD="$CMD --env=XDG_DATA_HOME=$HOME/.local/data"
     CMD="$CMD --env=XDG_STATE_HOME=$HOME/.local/state"
+    CMD="$CMD --env=XDG_CACHE_HOME=$HOME/.cache"
 
     # enable SDKs
     [[ -n "$SDK_IDS" ]] && CMD="$CMD --env=FLATPAK_ENABLE_SDK_EXT=$SDK_IDS"
@@ -79,8 +87,6 @@ nvim-contained
 
 Wrapper around nvim flatpak, sandboxed with minimal access to
 host system, any paths passed are mounted inside container RW
-
-NOTE when opening files/paths enclose them in @PATH@ to use file forwarding
 
 Arguments:
     --network       Allow network access
@@ -132,17 +138,16 @@ elif [[ "$INSTALL_SDK" == "1" ]]; then
     echo "Installing flatpak SDKs"
 
     # generate a list from sdk names
-    local ids=""
+    ids=""
     for i in ${SDK_IDS/,/ }; do
         ids="$ids org.freedesktop.Sdk.Extension.$i"
     done
 
-    flatpak install -y "$ids"
+    flatpak install -y $ids
 
     exit 0
 fi
 
-# TODO allow access to passed paths
-
-exec $(generate_cmd) "$@"
+# TODO explicitly allow paths passed but atm just open current directory
+exec $(generate_cmd --filesystem=$PWD) .
 
